@@ -1,5 +1,7 @@
 # secret-vault — Central Secrets Management Platform
 
+**🔗 Live showcase: https://kamilhakim-s.github.io/secret-vault/**
+
 An enterprise-grade, self-hosted secrets management platform built on **[OpenBao](https://openbao.org/)**
 (the Linux Foundation open-source fork of HashiCorp Vault), running on **Kubernetes / OpenShift**.
 
@@ -76,6 +78,15 @@ make verify           # 5. run the Phase 1 end-to-end check
 
 Implementation is phased — see [docs/architecture.md](docs/architecture.md) for the full
 build plan and the per-phase verification steps.
+
+## Showcase site
+
+A self-contained landing page lives in [`site/`](site/index.html) and is published to GitHub
+Pages by [`.github/workflows/pages.yml`](.github/workflows/pages.yml). To enable it: repo
+**Settings → Pages → Build and deployment → Source: GitHub Actions**, then push to `main`.
+Preview locally with `python3 -m http.server 8099 --directory site`.
+
+> Update the GitHub URLs in `site/index.html` and the link above if your username/repo differ.
 
 ## Status
 
