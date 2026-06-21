@@ -1,0 +1,25 @@
+# Exposes the OpenBao built-in UI + API externally on OpenShift.
+# Reencrypt: the Route terminates the public TLS cert and re-encrypts to the pod's
+# own serving cert, so traffic is encrypted end to end.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: openbao
+  namespace: secret-vault
+  labels:
+    app.kubernetes.io/name: openbao
+  annotations:
+    haproxy.router.openshift.io/timeout: 60s
+spec:
+  to:
+    kind: Service
+    name: openbao            # chart-created service fronting the active node
+    weight: 100
+  port:
+    targetPort: 8200
+  tls:
+    termination: reencrypt
+    insecureEdgeTerminationPolicy: Redirect
+    # destinationCACertificate is populated from the openbao-tls CA so the Route trusts
+    # the pod's serving cert. Inject via your GitOps templating / cert-manager.
+  wildcardPolicy: None

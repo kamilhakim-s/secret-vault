@@ -1,0 +1,66 @@
+# TEST-ONLY throwaway Active Directory (Samba AD DC) for exercising Phase 3 rotation.
+# DO NOT use in production. It self-signs its LDAPS cert, so the OpenBao ldap engine must be
+# configured with ad_insecure_tls=true (test only).
+#
+# On OpenShift, Samba AD DC needs elevated privileges (it manages users/keytabs). Grant the
+# anyuid (or a custom) SCC to this SA in the test namespace:
+#   oc adm policy add-scc-to-user anyuid -z samba-ad -n test-ad
+#
+# Pin the image to a digest/tag you have vetted; the tag below is a common community image.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-ad
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: samba-ad
+  namespace: test-ad
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: samba-ad
+  namespace: test-ad
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: samba-ad }
+  template:
+    metadata:
+      labels: { app: samba-ad }
+    spec:
+      serviceAccountName: samba-ad
+      containers:
+        - name: samba
+          image: nowsci/samba-domain:latest   # TEST ONLY — pin a digest you trust
+          env:
+            - name: DOMAIN
+              value: CORP.EXAMPLE.COM
+            - name: DOMAINPASS
+              value: "Test123!Test123!"        # test only
+            - name: NOCOMPLEXITY
+              value: "false"
+            - name: INSECURELDAP
+              value: "false"                    # keep LDAPS on; rotation needs TLS
+          ports:
+            - { containerPort: 389,  name: ldap }
+            - { containerPort: 636,  name: ldaps }
+            - { containerPort: 88,   name: kerberos }
+          securityContext:
+            # Samba AD DC requires broad caps; acceptable for a disposable test pod only.
+            privileged: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: samba-ad
+  namespace: test-ad
+spec:
+  selector: { app: samba-ad }
+  ports:
+    - { name: ldap,  port: 389,  targetPort: 389 }
+    - { name: ldaps, port: 636,  targetPort: 636 }
+    - { name: kerberos, port: 88, targetPort: 88 }

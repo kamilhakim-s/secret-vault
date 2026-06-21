@@ -1,0 +1,37 @@
+# OPTIONAL centralized VSO connection (alternative to the per-namespace VaultConnection in
+# examples/k8s). Apply after installing the operator (deploy/vso/README.md). A connection +
+# auth named "default" in the operator namespace are used by any VaultAuth/VaultStaticSecret
+# that omits an explicit ref, so app teams don't redeclare the endpoint.
+#
+# Trade-off: cross-namespace use requires VSO's allowedNamespaces to permit the app
+# namespaces. The per-namespace pattern in examples/k8s is simpler and version-robust; pick
+# one approach, not both. VSO uses "Vault*" CRD names but speaks the standard API → OpenBao.
+---
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultConnection
+metadata:
+  name: default                    # the operator-namespace default connection
+  namespace: vault-secrets-operator-system
+spec:
+  address: https://openbao.secret-vault.svc:8200
+  # CA bundle for the OpenBao serving cert. Create this Secret from the same CA used in
+  # deploy/helm (e.g. copy the openbao-tls CA, or the OpenShift service-CA bundle).
+  caCertSecretRef: openbao-ca
+  skipTLSVerify: false
+---
+# Default auth so workload namespaces can reference it without redefining the mount/role.
+# Per-workload VaultAuth (see examples/k8s) can still override role/serviceAccount.
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultAuth
+metadata:
+  name: default
+  namespace: vault-secrets-operator-system
+spec:
+  vaultConnectionRef: default
+  method: kubernetes
+  mount: kubernetes
+  kubernetes:
+    role: ""                       # set per workload via a namespace-scoped VaultAuth
+    serviceAccount: default
+  allowedNamespaces:
+    - "*"                          # tighten to the specific app namespaces in production

@@ -1,0 +1,85 @@
+# Phase 5 — Prometheus scrape + alerting for OpenBao.
+#
+# Requires the Prometheus Operator CRDs (ServiceMonitor/PrometheusRule). On OpenShift, enable
+# user-workload monitoring so these are picked up in the secret-vault namespace.
+#
+# Metrics use the `vault` prefix (OpenBao default) and are exposed at /v1/sys/metrics. The
+# listener has `unauthenticated_metrics_access = true`, so no bearer token is needed; reach is
+# constrained by the allow-prometheus-scrape NetworkPolicy.
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: openbao
+  namespace: secret-vault
+  labels:
+    app.kubernetes.io/name: openbao
+spec:
+  namespaceSelector:
+    matchNames: [secret-vault]
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openbao
+  endpoints:
+    - port: https            # chart service port name; verify with `oc get svc openbao`
+      scheme: https
+      path: /v1/sys/metrics
+      params:
+        format: ["prometheus"]
+      interval: 30s
+      tlsConfig:
+        ca:
+          secret:
+            name: openbao-tls
+            key: ca.crt
+        serverName: openbao.secret-vault.svc
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: openbao
+  namespace: secret-vault
+  labels:
+    app.kubernetes.io/name: openbao
+spec:
+  groups:
+    - name: openbao.rules
+      rules:
+        - alert: OpenBaoSealed
+          expr: vault_core_unsealed == 0
+          for: 5m
+          labels: { severity: critical }
+          annotations:
+            summary: "OpenBao node {{ $labels.instance }} is sealed"
+            description: "A sealed node cannot serve secrets. Check auto-unseal + the unsealer."
+        - alert: OpenBaoNoActiveNode
+          expr: sum(vault_core_active) < 1
+          for: 2m
+          labels: { severity: critical }
+          annotations:
+            summary: "No active OpenBao node (no leader)"
+            description: "The cluster has no active leader; writes will fail."
+        - alert: OpenBaoMetricsMissing
+          expr: absent(vault_core_unsealed)
+          for: 10m
+          labels: { severity: warning }
+          annotations:
+            summary: "OpenBao metrics absent"
+            description: "Prometheus is not receiving OpenBao metrics — scrape or node issue."
+        - alert: OpenBaoAuditLogFailure
+          # Audit is fail-closed: sustained failures can block requests. Investigate urgently.
+          expr: increase(vault_audit_log_request_failure[5m]) > 0
+          for: 1m
+          labels: { severity: critical }
+          annotations:
+            summary: "OpenBao audit log write failures"
+            description: "An audit device is failing. Check the file PVC and the SIEM forwarder."
+        - alert: OpenBaoLeadershipFlapping
+          expr: increase(vault_core_leadership_lost_count[15m]) > 2
+          for: 0m
+          labels: { severity: warning }
+          annotations:
+            summary: "OpenBao leadership is flapping"
+            description: "Repeated leadership changes — check Raft health, resources, network."
+        # NOTE: metric names can vary slightly by version. Verify with:
+        #   curl -ks https://<pod>:8200/v1/sys/metrics?format=prometheus | grep ^vault_

@@ -1,0 +1,21 @@
+# RBAC for the Kubernetes auth method (Phase 2).
+#
+# OpenBao verifies workload ServiceAccount tokens via the TokenReview API. The OpenBao
+# server's ServiceAccount must be allowed to call TokenReview (system:auth-delegator),
+# and — for short-lived projected tokens — to read the JWKS / issuer config.
+#
+# The OpenBao server ServiceAccount ("openbao") is created by the Helm chart.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openbao-auth-delegator
+  labels:
+    app.kubernetes.io/name: openbao
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: openbao
+    namespace: secret-vault

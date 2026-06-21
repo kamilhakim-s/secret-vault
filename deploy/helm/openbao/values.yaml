@@ -1,0 +1,150 @@
+# OpenBao HA cluster — Helm values (chart: openbao/openbao)
+# Production-leaning defaults for Kubernetes / OpenShift. Tune resources per environment.
+#
+# Auto-unseal points at the separate Transit unsealer deployed via values-unsealer.yaml.
+# The unsealer's token is provided through a Kubernetes Secret (NOT inlined here):
+#   oc create secret generic openbao-unseal-token \
+#     --from-literal=token=<unsealer-transit-token> -n secret-vault
+
+global:
+  # OpenShift sets non-root UIDs from a namespace range; let the chart adapt.
+  openshift: true
+  tlsDisable: false
+
+injector:
+  # We use the Vault Secrets Operator (Phase 2) instead of the sidecar injector by default.
+  enabled: false
+
+server:
+  image:
+    repository: quay.io/openbao/openbao
+    tag: "2.5.0"
+
+  # ---- High availability with Integrated (Raft) storage ----
+  ha:
+    enabled: true
+    replicas: 3
+    raft:
+      enabled: true
+      setNodeId: true
+      config: |
+        ui = true
+        listener "tcp" {
+          address       = "[::]:8200"
+          cluster_address = "[::]:8201"
+          tls_cert_file = "/openbao/userconfig/openbao-tls/tls.crt"
+          tls_key_file  = "/openbao/userconfig/openbao-tls/tls.key"
+          tls_client_ca_file = "/openbao/userconfig/openbao-tls/ca.crt"
+          # Allow Prometheus to scrape /v1/sys/metrics on every node (incl. sealed standbys)
+          # without a token. Restrict reachability via NetworkPolicy (Phase 5).
+          telemetry {
+            unauthenticated_metrics_access = true
+          }
+        }
+
+        storage "raft" {
+          path = "/openbao/data"
+          retry_join {
+            leader_api_addr = "https://openbao-0.openbao-internal:8200"
+            leader_ca_cert_file = "/openbao/userconfig/openbao-tls/ca.crt"
+          }
+          retry_join {
+            leader_api_addr = "https://openbao-1.openbao-internal:8200"
+            leader_ca_cert_file = "/openbao/userconfig/openbao-tls/ca.crt"
+          }
+          retry_join {
+            leader_api_addr = "https://openbao-2.openbao-internal:8200"
+            leader_ca_cert_file = "/openbao/userconfig/openbao-tls/ca.crt"
+          }
+          autopilot {
+            cleanup_dead_servers = true
+            dead_server_last_contact_threshold = "24h0m0s"
+          }
+        }
+
+        # Auto-unseal via the separate Transit instance. OPENBAO_TOKEN is injected
+        # from the openbao-unseal-token Secret (see extraSecretEnvironmentVars).
+        seal "transit" {
+          address    = "https://openbao-unsealer.secret-vault.svc:8200"
+          mount_path = "transit/"
+          key_name   = "autounseal"
+          tls_ca_cert = "/openbao/userconfig/unsealer-ca/ca.crt"
+        }
+
+        service_registration "kubernetes" {}
+
+        # Telemetry for Prometheus scraping (Phase 5).
+        telemetry {
+          prometheus_retention_time = "30s"
+          disable_hostname = true
+        }
+
+  # TLS material mounted from Secrets created by cert-manager / OpenShift service-CA.
+  volumes:
+    - name: openbao-tls
+      secret:
+        secretName: openbao-tls
+    - name: unsealer-ca
+      secret:
+        secretName: openbao-unsealer-ca
+  volumeMounts:
+    - name: openbao-tls
+      mountPath: /openbao/userconfig/openbao-tls
+      readOnly: true
+    - name: unsealer-ca
+      mountPath: /openbao/userconfig/unsealer-ca
+      readOnly: true
+
+  extraEnvironmentVars:
+    OPENBAO_ADDR: https://127.0.0.1:8200
+    OPENBAO_CACERT: /openbao/userconfig/openbao-tls/ca.crt
+    OPENBAO_CLUSTER_ADDR: https://$(HOSTNAME).openbao-internal:8201
+
+  extraSecretEnvironmentVars:
+    - envName: OPENBAO_TOKEN          # token for the Transit unsealer
+      secretName: openbao-unseal-token
+      secretKey: token
+
+  # Persist Raft data.
+  dataStorage:
+    enabled: true
+    size: 10Gi
+    storageClass: null               # set per environment (e.g. gp3, ocs-storagecluster-ceph-rbd)
+
+  auditStorage:
+    enabled: true
+    size: 10Gi
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+  # Spread replicas across nodes/zones for real HA.
+  affinity: |
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ template "vault.name" . }}
+              app.kubernetes.io/instance: "{{ .Release.Name }}"
+              component: server
+          topologyKey: kubernetes.io/hostname
+
+  readinessProbe:
+    enabled: true
+    # Ready only when unsealed and active/standby (not sealed, not uninitialized).
+    path: "/v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204"
+  livenessProbe:
+    enabled: true
+    path: "/v1/sys/health?standbyok=true"
+    initialDelaySeconds: 60
+
+# Built-in web UI. Exposed via an OpenShift Route (deploy/openshift/route.yaml)
+# or an Ingress on plain Kubernetes.
+ui:
+  enabled: true
+  serviceType: ClusterIP

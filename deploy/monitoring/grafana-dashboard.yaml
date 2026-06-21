@@ -1,0 +1,70 @@
+# Phase 5 — Grafana dashboard for OpenBao, delivered as a ConfigMap. The `grafana_dashboard`
+# label makes the Grafana sidecar / Grafana Operator auto-import it. Adjust the label/namespace
+# to match your Grafana deployment.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openbao-dashboard
+  namespace: secret-vault
+  labels:
+    grafana_dashboard: "1"
+data:
+  openbao.json: |
+    {
+      "title": "OpenBao",
+      "uid": "openbao-overview",
+      "schemaVersion": 39,
+      "timezone": "browser",
+      "refresh": "30s",
+      "time": { "from": "now-6h", "to": "now" },
+      "templating": {
+        "list": [
+          {
+            "name": "datasource",
+            "type": "datasource",
+            "query": "prometheus",
+            "current": {}
+          }
+        ]
+      },
+      "panels": [
+        {
+          "type": "stat",
+          "title": "Unsealed nodes",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+          "fieldConfig": { "defaults": { "mappings": [
+            { "type": "value", "options": { "0": { "text": "SEALED", "color": "red" }, "1": { "text": "UNSEALED", "color": "green" } } }
+          ] } },
+          "targets": [ { "expr": "vault_core_unsealed", "legendFormat": "{{instance}}" } ]
+        },
+        {
+          "type": "stat",
+          "title": "Active nodes (leaders)",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+          "targets": [ { "expr": "sum(vault_core_active)" } ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Audit log write failures (rate)",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "targets": [ { "expr": "rate(vault_audit_log_request_failure[5m])" } ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Leadership losses",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "targets": [ { "expr": "increase(vault_core_leadership_lost_count[15m])" } ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Request handling rate",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "targets": [ { "expr": "rate(vault_core_handle_request_count[5m])" } ]
+        }
+      ]
+    }

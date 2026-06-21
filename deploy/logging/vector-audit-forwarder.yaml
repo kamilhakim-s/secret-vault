@@ -1,0 +1,88 @@
+# Audit log forwarder. Receives OpenBao's socket audit stream (JSON lines over TCP) and ships
+# it onward. By default it writes to stdout so the cluster logging stack (OpenShift Logging /
+# Loki / EFK) forwards it to the SIEM; an http sink for a SIEM HEC endpoint is shown commented.
+#
+# Deploy this BEFORE enabling the socket audit device (terraform enable_audit_socket=true),
+# because OpenBao validates connectivity when the device is enabled.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: logging
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vector-audit-config
+  namespace: logging
+data:
+  vector.yaml: |
+    sources:
+      openbao_audit:
+        type: socket
+        mode: tcp
+        address: 0.0.0.0:9000
+        decoding:
+          codec: json
+    transforms:
+      tag:
+        type: remap
+        inputs: [openbao_audit]
+        source: |
+          .source = "openbao-audit"
+    sinks:
+      # Default: emit to stdout -> picked up by the platform log pipeline -> SIEM.
+      stdout:
+        type: console
+        inputs: [tag]
+        encoding:
+          codec: json
+      # SIEM HEC example (uncomment + set endpoint/token via env or a secret):
+      # siem:
+      #   type: http
+      #   inputs: [tag]
+      #   uri: https://splunk-hec.example.com:8088/services/collector/event
+      #   encoding:
+      #     codec: json
+      #   request:
+      #     headers:
+      #       Authorization: "Splunk ${SIEM_HEC_TOKEN}"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vector-audit
+  namespace: logging
+spec:
+  replicas: 2                      # HA so the socket device always has a target
+  selector:
+    matchLabels: { app: vector-audit }
+  template:
+    metadata:
+      labels: { app: vector-audit }
+    spec:
+      containers:
+        - name: vector
+          image: timberio/vector:0.40.0-distroless-libc
+          args: ["--config", "/etc/vector/vector.yaml"]
+          ports:
+            - { containerPort: 9000, name: audit-tcp }
+          volumeMounts:
+            - { name: config, mountPath: /etc/vector, readOnly: true }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: ["ALL"] }
+      volumes:
+        - name: config
+          configMap: { name: vector-audit-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vector-audit
+  namespace: logging
+spec:
+  selector: { app: vector-audit }
+  ports:
+    - { name: audit-tcp, port: 9000, targetPort: 9000 }

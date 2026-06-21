@@ -1,0 +1,35 @@
+# OpenShift GitOps (Argo CD) Application that continuously reconciles the platform manifests.
+# Every change is a reviewed PR to this repo, and that review IS the approval workflow.
+#
+# Scope note: Argo CD applies Kubernetes manifests only. OpenBao *configuration* (mounts,
+# policies, auth, LDAP rotation) is Terraform and is applied out-of-band (CI job or operator
+# run) — keep both behind the same PR review gate.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: secret-vault-platform
+  namespace: openshift-gitops
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.example.com/platform/secret-vault.git  # set to your repo
+    targetRevision: main
+    path: deploy/openshift
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: secret-vault
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false      # namespace is created by Helm/bootstrap
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        maxDuration: 3m
+        factor: 2

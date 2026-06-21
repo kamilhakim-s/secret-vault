@@ -1,0 +1,73 @@
+# OpenBao "unsealer" — a small, separate single-node instance that ONLY provides a
+# Transit key used to auto-unseal the main cluster. Keeping it separate breaks the
+# circular dependency (a cluster cannot auto-unseal itself).
+#
+# Bootstrapping (one-time, see scripts/bootstrap-init.sh):
+#   1. helm install with these values
+#   2. bao operator init   (this instance uses Shamir — its keys are stored offline)
+#   3. bao secrets enable transit
+#   4. bao write -f transit/keys/autounseal
+#   5. create a policy + token granting encrypt/decrypt on transit/*/autounseal
+#   6. store that token in the main cluster's `openbao-unseal-token` Secret
+#
+# In production the unsealer itself should ideally be backed by a cloud KMS or HSM;
+# on a fully on-prem OpenShift, this Shamir-sealed helper is the standard pattern.
+
+global:
+  openshift: true
+  tlsDisable: false
+
+injector:
+  enabled: false
+
+server:
+  image:
+    repository: quay.io/openbao/openbao
+    tag: "2.5.0"
+
+  # Single node is sufficient: this instance holds no application secrets, only the
+  # wrapping key. Back it up (Raft snapshot) and document recovery.
+  ha:
+    enabled: false
+
+  standalone:
+    enabled: true
+    config: |
+      ui = false
+      listener "tcp" {
+        address       = "[::]:8200"
+        tls_cert_file = "/openbao/userconfig/unsealer-tls/tls.crt"
+        tls_key_file  = "/openbao/userconfig/unsealer-tls/tls.key"
+      }
+      storage "raft" {
+        path = "/openbao/data"
+      }
+      service_registration "kubernetes" {}
+
+  volumes:
+    - name: unsealer-tls
+      secret:
+        secretName: openbao-unsealer-tls
+  volumeMounts:
+    - name: unsealer-tls
+      mountPath: /openbao/userconfig/unsealer-tls
+      readOnly: true
+
+  extraEnvironmentVars:
+    OPENBAO_ADDR: https://127.0.0.1:8200
+    OPENBAO_CACERT: /openbao/userconfig/unsealer-tls/ca.crt
+
+  dataStorage:
+    enabled: true
+    size: 2Gi
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+ui:
+  enabled: false

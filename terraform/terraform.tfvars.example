@@ -1,0 +1,71 @@
+# Copy to terraform.tfvars and fill in. Do NOT commit the real file (see .gitignore).
+# Authenticate Terraform itself by exporting a short-lived admin token:
+#   export VAULT_TOKEN=<admin token>     # the `vault` provider reads VAULT_TOKEN
+
+openbao_addr         = "https://openbao.secret-vault.svc:8200"
+openbao_ca_cert_file = "./openbao-ca.crt"
+
+teams = ["platform", "payments"]
+
+# ---- OIDC (human SSO) ----
+# Entra ID example issuer: https://login.microsoftonline.com/<tenant-id>/v2.0
+# Keycloak example issuer:  https://keycloak.example.com/realms/corp
+oidc_discovery_url = "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0"
+oidc_client_id     = "REPLACE_ME"
+oidc_client_secret = "REPLACE_ME"
+oidc_group_claim   = "groups"
+
+oidc_group_to_team = {
+  "secret-vault-platform" = "platform"
+  "secret-vault-payments" = "payments"
+}
+oidc_admin_group = "secret-vault-admins"
+
+# ---- GitLab ----
+gitlab_issuer = "https://gitlab.example.com"
+
+gitlab_projects = {
+  "payments-api" = {
+    project_path = "payments/payments-api"
+    team         = "payments"
+  }
+}
+
+# ---- Phase 2: Kubernetes / OpenShift workloads ----
+enable_kubernetes_auth = true
+
+k8s_workloads = {
+  # role name = key; matches the VaultAuth role in examples/k8s/vault-static-secret.yaml
+  "payments-api-app" = {
+    service_account = "payments-api"
+    namespace       = "payments"
+    team            = "payments"
+  }
+}
+
+# ---- Phase 3: AD secrets with auto-rotation ----
+# enable_ldap_secrets = true
+# ad_url      = "ldaps://dc1.corp.example.com"
+# ad_binddn   = "CN=svc-openbao,OU=ServiceAccounts,DC=corp,DC=example,DC=com"
+# ad_bindpass = "REPLACE_ME"
+# ad_userdn   = "OU=ServiceAccounts,DC=corp,DC=example,DC=com"
+#
+# Static roles: OpenBao owns + rotates a specific AD service account.
+# ad_static_roles = {
+#   "payments-svc" = {
+#     dn              = "CN=svc-payments,OU=ServiceAccounts,DC=corp,DC=example,DC=com"
+#     username        = "svc-payments"
+#     rotation_period = 86400        # daily
+#     team            = "payments"   # -> grants ldap-read-payments to the team/CI/workloads
+#   }
+# }
+#
+# Libraries: a pool of shared accounts handed out via check-out/check-in.
+# ad_libraries = {
+#   "payments-batch" = {
+#     team                  = "payments"
+#     service_account_names = ["svc-batch-1", "svc-batch-2"]
+#     ttl                   = 3600
+#     max_ttl               = 14400
+#   }
+# }

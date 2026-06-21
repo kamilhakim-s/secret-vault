@@ -1,0 +1,100 @@
+# Scheduled Raft snapshot — the backbone of the DR strategy (OpenBao OSS has no cross-region
+# replication; see docs/runbooks/dr-snapshot-restore.md).
+#
+# Credential-free: the job authenticates to OpenBao via the kubernetes auth method using its
+# own ServiceAccount token, gets a short-lived token with the `raft-snapshot` policy, and
+# writes a snapshot to a PVC. An OPTIONAL object-storage upload step is included but commented
+# (uncomment + provide credentials/IRSA to push offsite).
+#
+# Prereqs: kubernetes auth enabled (Terraform enable_kubernetes_auth=true) — this also creates
+# the `raft-snapshot` role bound to the `openbao-snapshot` ServiceAccount below.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openbao-snapshot
+  namespace: secret-vault
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openbao-snapshots
+  namespace: secret-vault
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi
+  # storageClassName: <set per environment>
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: openbao-raft-snapshot
+  namespace: secret-vault
+spec:
+  schedule: "0 * * * *"          # hourly → RPO ~1h; tune to your objective
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
+      template:
+        spec:
+          serviceAccountName: openbao-snapshot
+          restartPolicy: Never
+          # Projected SA token with the OpenBao address as audience (matches kubernetes auth).
+          volumes:
+            - name: snapshots
+              persistentVolumeClaim:
+                claimName: openbao-snapshots
+            - name: tls-ca
+              secret:
+                secretName: openbao-tls    # CA to verify the OpenBao serving cert
+            - name: sa-token
+              projected:
+                sources:
+                  - serviceAccountToken:
+                      path: token
+                      expirationSeconds: 600
+                      audience: https://kubernetes.default.svc
+          containers:
+            - name: snapshot
+              image: quay.io/openbao/openbao:2.5.0
+              env:
+                - name: VAULT_ADDR
+                  value: https://openbao.secret-vault.svc:8200
+                - name: VAULT_CACERT
+                  value: /tls/ca.crt
+                - name: ROLE
+                  value: raft-snapshot
+              volumeMounts:
+                - name: snapshots
+                  mountPath: /snapshots
+                - name: tls-ca
+                  mountPath: /tls
+                  readOnly: true
+                - name: sa-token
+                  mountPath: /var/run/secrets/tokens
+                  readOnly: true
+              command: ["/bin/sh", "-ec"]
+              args:
+                - |
+                  JWT="$(cat /var/run/secrets/tokens/token)"
+                  export VAULT_TOKEN="$(bao write -field=token \
+                    auth/kubernetes/login role="$ROLE" jwt="$JWT")"
+                  TS="$(date -u +%Y%m%dT%H%M%SZ)"
+                  bao operator raft snapshot save "/snapshots/openbao-${TS}.snap"
+                  echo "snapshot written: /snapshots/openbao-${TS}.snap"
+                  # Prune local snapshots older than 7 days.
+                  find /snapshots -name 'openbao-*.snap' -mtime +7 -delete
+                  # ---- OPTIONAL offsite upload (uncomment + provide creds/IRSA) ----
+                  # aws s3 cp "/snapshots/openbao-${TS}.snap" \
+                  #   "s3://my-bucket/openbao/openbao-${TS}.snap" --sse aws:kms
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                capabilities:
+                  drop: ["ALL"]

@@ -1,0 +1,57 @@
+# Example: pull a secret from OpenBao into a GitLab CI job with zero stored credentials.
+#
+# The job mints a short-lived OIDC id_token; OpenBao verifies it (jwt-gitlab auth method)
+# and returns a job-scoped token. Two patterns are shown:
+#   1. native `secrets:` keyword   (GitLab Premium/Ultimate)
+#   2. manual fetch with the `bao` CLI (works on any GitLab tier, incl. Free/CE)
+#
+# Configure once at the project/group level:
+#   VAULT_ADDR = https://openbao.apps.example.com   (CI/CD variable, NOT secret)
+# OpenBao side (Terraform): a jwt-gitlab role named after the project, bound to project_path,
+# granting ci-read-<team> on kv/<team>.
+
+# The audience must match `bound_audiences` on the OpenBao role (the GitLab issuer URL).
+.id_token_def: &id_token_def
+  VAULT_ID_TOKEN:
+    aud: https://gitlab.example.com
+
+# ----------------------------------------------------------------------------------------
+# Pattern 1 — native secrets: keyword (Premium/Ultimate). GitLab does the JWT exchange.
+# ----------------------------------------------------------------------------------------
+deploy:premium:
+  stage: deploy
+  id_tokens:
+    <<: *id_token_def
+  variables:
+    VAULT_SERVER_URL: https://openbao.apps.example.com
+    VAULT_AUTH_PATH: jwt-gitlab           # auth mount created in Terraform
+    VAULT_AUTH_ROLE: payments-api         # role name = key in var.gitlab_projects
+  secrets:
+    DB_PASSWORD:
+      vault:
+        engine:
+          name: kv-v2
+          path: kv/payments               # mount
+        path: payments-api                # secret path within the mount
+        field: db_password
+  script:
+    - echo "DB_PASSWORD is now available as a masked env var (never logged)."
+    - ./deploy.sh
+
+# ----------------------------------------------------------------------------------------
+# Pattern 2 — manual fetch with the bao CLI (any tier). Portable fallback.
+# ----------------------------------------------------------------------------------------
+deploy:portable:
+  stage: deploy
+  image: quay.io/openbao/openbao:2.5.0
+  id_tokens:
+    <<: *id_token_def
+  variables:
+    VAULT_ADDR: https://openbao.apps.example.com
+  script:
+    # Exchange the GitLab id_token for a job-scoped OpenBao token.
+    - export VAULT_TOKEN="$(bao write -field=token auth/jwt-gitlab/login
+        role=payments-api jwt=$VAULT_ID_TOKEN)"
+    # Read the secret (kv-v2 → note the implicit data/ path is handled by `bao kv get`).
+    - export DB_PASSWORD="$(bao kv get -mount=kv/payments -field=db_password payments-api)"
+    - ./deploy.sh
